@@ -438,6 +438,8 @@ def main():
         description='Generate Traffic Analysis Report PDFs from VAS radar CSV data.')
     parser.add_argument('csv_files', nargs='*',
                         help='CSV file(s) to process. Defaults to all *.csv in current directory.')
+    parser.add_argument('--output', '-o', default=None, metavar='FILE',
+                        help='Output PDF path (only valid when processing a single CSV file).')
     parser.add_argument('--speed-limit', type=int, default=SPEED_LIMIT, metavar='MPH',
                         help=f'Speed limit in mph (default: {SPEED_LIMIT})')
     parser.add_argument('--location', default=LOCATION, metavar='NAME',
@@ -456,8 +458,13 @@ def main():
         print('No CSV files found.')
         sys.exit(1)
 
+    if args.output and len(csv_files) > 1:
+        print('Error: --output can only be used with a single CSV file.')
+        sys.exit(1)
+
     for csv_path in csv_files:
-        out_path = os.path.splitext(csv_path)[0] + '_report.pdf'
+        out_path = args.output if (args.output and len(csv_files) == 1) \
+                   else os.path.splitext(csv_path)[0] + '_report.pdf'
         print(f'\nReading: {csv_path}')
         try:
             rows, bands, interval = parse_csv(csv_path)

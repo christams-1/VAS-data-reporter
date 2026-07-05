@@ -11,15 +11,16 @@ pip install -r requirements.txt
 ## Usage
 
 ```
-python3 generate_report.py <csv_file> [output_file.pdf] [options]
+python3 generate_report.py [csv_file ...] [options]
 ```
 
-The output PDF defaults to `<csv_file>_report.pdf` if no output path is given.
+The output PDF defaults to `<csv_file>_report.pdf` if `--output` is not given. Omitting all CSV files processes every `*.csv` in the current directory.
 
 ### Options
 
 | Option | Default | Description |
 |---|---|---|
+| `--output FILE`, `-o FILE` | *(auto)* | Output PDF path (single-file mode only) |
 | `--speed-limit MPH` | `30` | Speed limit for the site in mph |
 | `--location NAME` | *(empty)* | Location or direction label (e.g. `Incoming`) |
 | `--notes TEXT` | *(empty)* | Project notes or address |
@@ -30,8 +31,14 @@ The output PDF defaults to `<csv_file>_report.pdf` if no output path is given.
 # Minimal — use all defaults
 python3 generate_report.py data.csv
 
+# Specify output path
+python3 generate_report.py data.csv --output report.pdf
+
 # Specify all parameters
-python3 generate_report.py data.csv report.pdf --speed-limit 30 --location "Incoming" --notes "Station Road (by School)"
+python3 generate_report.py data.csv -o report.pdf --speed-limit 30 --location "Incoming" --notes "Station Road (by School)"
+
+# Process all CSVs in the current directory
+python3 generate_report.py
 ```
 
 ## Input CSV format
