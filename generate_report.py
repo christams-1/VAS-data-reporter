@@ -15,6 +15,16 @@ import sys
 import os
 from datetime import datetime, timedelta
 from collections import defaultdict, Counter
+from xml.sax.saxutils import escape
+
+from reportlab import rl_config
+
+# Paragraph text is parsed as markup, so a <img src="..."> smuggled into a
+# user-supplied field would otherwise read local files or fetch remote URLs.
+# Escaping every interpolated value (see build_pdf) is the actual defence.
+# This only narrows URL-scheme fetches -- it does NOT stop bare filesystem
+# paths, which reach ImageReader without a scheme check.
+rl_config.trustedSchemes = []
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
@@ -25,13 +35,20 @@ from reportlab.platypus import (
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-# Configuration (overridden by CLI args in main())
-SPEED_LIMIT = 30
-LOCATION    = ""
-NOTES       = ""
+# Defaults only. These are never reassigned at runtime: report settings are
+# passed as arguments, so concurrent callers (e.g. two Streamlit sessions in
+# one process) cannot overwrite each other's values.
+DEFAULT_SPEED_LIMIT = 30
+DEFAULT_LOCATION    = ""
+DEFAULT_NOTES       = ""
 
 
 # Band detection
+
+# calc_pace() expands each band one mph at a time, so an absurd upper bound in a
+# CSV header ('35-999999999 mph') would exhaust memory. Real bands are far
+# narrower than this ceiling.
+_MAX_BAND_WIDTH = 200
 
 _RANGE_RE  = re.compile(r'^(\d+)\s*-\s*(\d+)\s*mph$', re.IGNORECASE)
 _GT_RE     = re.compile(r'^>\s*(\d+)\s*mph$',          re.IGNORECASE)
@@ -58,6 +75,13 @@ def detect_bands(fieldnames):
         m = _RANGE_RE.match(name)
         if m:
             lo, hi = int(m.group(1)), int(m.group(2))
+            if hi < lo:
+                raise ValueError(
+                    f'Speed-band column {name!r} has an inverted range.')
+            if hi - lo + 1 > _MAX_BAND_WIDTH:
+                raise ValueError(
+                    f'Speed-band column {name!r} spans more than '
+                    f'{_MAX_BAND_WIDTH} mph.')
             bands.append((name, lo, hi, (lo + hi) / 2))
             continue
         m = _GT_RE.match(name)
@@ -98,7 +122,7 @@ def detect_bands(fieldnames):
 
 # Parsing
 
-def parse_csv(filepath):
+def parse_csv(filepath, speed_limit=DEFAULT_SPEED_LIMIT):
     """
     Returns (rows, bands, interval).
     bands/interval are detected from the CSV column headers.
@@ -108,7 +132,7 @@ def parse_csv(filepath):
         reader     = csv.DictReader(f)
         bands, interval = detect_bands(reader.fieldnames)
         band_names      = [b[0] for b in bands]
-        speeder_idx     = [i for i, (_, lo, _, _) in enumerate(bands) if lo >= SPEED_LIMIT]
+        speeder_idx     = [i for i, (_, lo, _, _) in enumerate(bands) if lo >= speed_limit]
 
         for row in reader:
             try:
@@ -140,6 +164,7 @@ def parse_csv(filepath):
                     'date':             log_time.date(),
                     'hour':             end_time.hour,
                     'speeder_idx':      speeder_idx,
+                    'speed_limit':      speed_limit,
                 })
             except (ValueError, KeyError):
                 continue
@@ -257,13 +282,17 @@ def make_table(data, col_widths, header_rows=1, zebra=True):
     return t
 
 
-def build_pdf(rows, bands, interval, out_path, csv_path):
+def build_pdf(rows, bands, interval, out_path, csv_path,
+              location=DEFAULT_LOCATION, notes=DEFAULT_NOTES):
     if not rows:
         print('No data rows found.')
         return
 
     n_bands     = len(bands)
     speeder_idx = rows[0]['speeder_idx']
+    # Taken from the parsed rows rather than a separate argument, so the limit
+    # reported here cannot drift from the one speeder_idx was computed with.
+    speed_limit = rows[0]['speed_limit']
 
     # Statistics
     project_name = os.path.splitext(os.path.basename(csv_path))[0]
@@ -351,8 +380,8 @@ def build_pdf(rows, bands, interval, out_path, csv_path):
     story.append(Paragraph('TRAFFIC ANALYSIS REPORT', title_s))
     for label, val in [
         ('For Project: ',            project_name),
-        ('Projects Notes/Address: ', NOTES),
-        ('Location/Name: ',          LOCATION),
+        ('Projects Notes/Address: ', notes),
+        ('Location/Name: ',          location),
         ('Report Generated: ',       generated),
         ('Speed Intervals = ',       f'{interval} MPH'),
         ('Time Intervals = ',        'Instant'),
@@ -365,7 +394,7 @@ def build_pdf(rows, bands, interval, out_path, csv_path):
         ('Total Vehicles =',            f'{total_vehicles:,} counts'),
         ('AADT: ',                      f'{aadt:.1f}'),
     ]:
-        story.append(Paragraph(f'<b>{label}</b>{val}', normal_s))
+        story.append(Paragraph(f'<b>{label}</b>{escape(str(val))}', normal_s))
 
     sp(8)
 
@@ -383,13 +412,13 @@ def build_pdf(rows, bands, interval, out_path, csv_path):
     # Speed summary
     story.append(Paragraph('Speed', section_s))
     for label, val in [
-        ('Speed Limit: ',          f'{SPEED_LIMIT} MPH'),
+        ('Speed Limit: ',          f'{speed_limit} MPH'),
         ('85th Percentile Speed: ', f'{p85_speed:.1f} MPH'),
         ('50th Percentile Speed: ', f'{p50_speed:.1f} MPH'),
         ('10 MPH Pace Interval: ',  f'{pace_lo:.1f} MPH to {pace_hi:.1f} MPH'),
         ('Average Speed: ',         f'{avg_spd_overall:.1f} MPH'),
     ]:
-        story.append(Paragraph(f'<b>{label}</b>{val}', normal_s))
+        story.append(Paragraph(f'<b>{label}</b>{escape(str(val))}', normal_s))
     sp(8)
 
     # Day-of-week
@@ -432,25 +461,19 @@ def build_pdf(rows, bands, interval, out_path, csv_path):
 # Entry point
 
 def main():
-    global SPEED_LIMIT, LOCATION, NOTES
-
     parser = argparse.ArgumentParser(
         description='Generate Traffic Analysis Report PDFs from VAS radar CSV data.')
     parser.add_argument('csv_files', nargs='*',
                         help='CSV file(s) to process. Defaults to all *.csv in current directory.')
     parser.add_argument('--output', '-o', default=None, metavar='FILE',
                         help='Output PDF path (only valid when processing a single CSV file).')
-    parser.add_argument('--speed-limit', type=int, default=SPEED_LIMIT, metavar='MPH',
-                        help=f'Speed limit in mph (default: {SPEED_LIMIT})')
-    parser.add_argument('--location', default=LOCATION, metavar='NAME',
-                        help=f'Location/direction label (default: "{LOCATION}")')
-    parser.add_argument('--notes', default=NOTES, metavar='TEXT',
+    parser.add_argument('--speed-limit', type=int, default=DEFAULT_SPEED_LIMIT, metavar='MPH',
+                        help=f'Speed limit in mph (default: {DEFAULT_SPEED_LIMIT})')
+    parser.add_argument('--location', default=DEFAULT_LOCATION, metavar='NAME',
+                        help=f'Location/direction label (default: "{DEFAULT_LOCATION}")')
+    parser.add_argument('--notes', default=DEFAULT_NOTES, metavar='TEXT',
                         help='Project notes / address (default: empty)')
     args = parser.parse_args()
-
-    SPEED_LIMIT = args.speed_limit
-    LOCATION    = args.location
-    NOTES       = args.notes
 
     import glob
     csv_files = args.csv_files or sorted(glob.glob('*.csv'))
@@ -467,11 +490,12 @@ def main():
                    else os.path.splitext(csv_path)[0] + '_report.pdf'
         print(f'\nReading: {csv_path}')
         try:
-            rows, bands, interval = parse_csv(csv_path)
+            rows, bands, interval = parse_csv(csv_path, speed_limit=args.speed_limit)
             print(f'Parsed {len(rows)} hourly records  |  '
                   f'Detected {len(bands)} speed bands  |  '
                   f'Speed interval: {interval} MPH')
-            build_pdf(rows, bands, interval, out_path, csv_path)
+            build_pdf(rows, bands, interval, out_path, csv_path,
+                      location=args.location, notes=args.notes)
         except ValueError as e:
             print(f'Skipping: {e}')
 
