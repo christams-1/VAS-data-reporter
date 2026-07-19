@@ -284,9 +284,14 @@ def make_table(data, col_widths, header_rows=1, zebra=True):
 
 def build_pdf(rows, bands, interval, out_path, csv_path,
               location=DEFAULT_LOCATION, notes=DEFAULT_NOTES):
+    """Write the report to out_path. Returns True if a PDF was produced.
+
+    Deliberately silent: callers report progress. Printing here would put the
+    output path -- and so the uploaded filename -- into the hosting platform's
+    logs on every run of the Streamlit front-end.
+    """
     if not rows:
-        print('No data rows found.')
-        return
+        return False
 
     n_bands     = len(bands)
     speeder_idx = rows[0]['speeder_idx']
@@ -455,7 +460,7 @@ def build_pdf(rows, bands, interval, out_path, csv_path,
     ))
 
     doc.build(story)
-    print(f'Report written to: {out_path}')
+    return True
 
 
 # Entry point
@@ -494,10 +499,17 @@ def main():
             print(f'Parsed {len(rows)} hourly records  |  '
                   f'Detected {len(bands)} speed bands  |  '
                   f'Speed interval: {interval} MPH')
-            build_pdf(rows, bands, interval, out_path, csv_path,
-                      location=args.location, notes=args.notes)
+            if build_pdf(rows, bands, interval, out_path, csv_path,
+                         location=args.location, notes=args.notes):
+                print(f'Report written to: {out_path}')
+            else:
+                print('No data rows found.')
         except ValueError as e:
             print(f'Skipping: {e}')
+        except Exception as e:                      # noqa: BLE001
+            # One malformed file (csv.Error, I/O failure) must not abort the
+            # rest of the batch.
+            print(f'Skipping {csv_path}: {type(e).__name__}: {e}')
 
 
 if __name__ == '__main__':

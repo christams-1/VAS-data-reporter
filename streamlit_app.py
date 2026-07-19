@@ -8,12 +8,15 @@ Deploy for free on Streamlit Community Cloud (streamlit.io/cloud):
 point it at this repo, entry point = streamlit_app.py.
 """
 
+import logging
 import os
 import tempfile
 
 import streamlit as st
 
 import generate_report as gr
+
+logger = logging.getLogger(__name__)
 
 st.set_page_config(page_title="VAS Radar Report Generator", page_icon="🚦")
 
@@ -46,41 +49,64 @@ if generate:
     # module is shared by every session in this process, so module-level state
     # would let a concurrent user's notes/location land in this user's PDF.
     with tempfile.TemporaryDirectory() as tmpdir:
-        for uploaded_file in uploaded_files:
+        used_names = set()
+
+        for idx, uploaded_file in enumerate(uploaded_files):
             # The client controls this name; strip any directory components so a
             # crafted upload cannot write outside tmpdir.
             safe_name = os.path.basename(uploaded_file.name).lstrip(".") or "upload.csv"
 
-            csv_path = os.path.join(tmpdir, safe_name)
-            with open(csv_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
+            # Two uploads may share a name, which would otherwise overwrite each
+            # other inside tmpdir and collide on the download widget key.
+            base, ext = os.path.splitext(safe_name)
+            suffix = 2
+            while safe_name in used_names:
+                safe_name = f"{base}_{suffix}{ext}"
+                suffix += 1
+            used_names.add(safe_name)
 
+            csv_path = os.path.join(tmpdir, safe_name)
             out_name = os.path.splitext(safe_name)[0] + "_report.pdf"
             out_path = os.path.join(tmpdir, out_name)
 
             try:
+                with open(csv_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+
                 rows, bands, interval = gr.parse_csv(
                     csv_path, speed_limit=int(speed_limit)
                 )
+
+                if not rows:
+                    st.warning(f"**{safe_name}**: no valid data rows found — skipped.")
+                    continue
+
+                gr.build_pdf(rows, bands, interval, out_path, csv_path,
+                             location=location, notes=notes)
+
+                with open(out_path, "rb") as f:
+                    pdf_bytes = f.read()
             except ValueError as e:
-                st.error(f"**{uploaded_file.name}**: {e}")
+                # Raised by detect_bands for CSVs we can describe precisely.
+                st.error(f"**{safe_name}**: {e}")
+                continue
+            except Exception:
+                # Anything else (csv.Error on NUL bytes or oversized fields, I/O
+                # failures) must not take down the whole run. Detail goes to the
+                # server log rather than the page, which would expose internal
+                # paths and tracebacks to an anonymous visitor.
+                logger.exception("Failed to generate report for %s", safe_name)
+                st.error(
+                    f"**{safe_name}**: could not be processed — "
+                    "please check it is a valid VAS radar CSV export."
+                )
                 continue
 
-            if not rows:
-                st.warning(f"**{uploaded_file.name}**: no valid data rows found — skipped.")
-                continue
-
-            gr.build_pdf(rows, bands, interval, out_path, csv_path,
-                         location=location, notes=notes)
-
-            with open(out_path, "rb") as f:
-                pdf_bytes = f.read()
-
-            st.success(f"Report generated for **{uploaded_file.name}**")
+            st.success(f"Report generated for **{safe_name}**")
             st.download_button(
                 label=f"⬇ Download {out_name}",
                 data=pdf_bytes,
                 file_name=out_name,
                 mime="application/pdf",
-                key=out_name,
+                key=f"download_{idx}",
             )

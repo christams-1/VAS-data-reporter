@@ -1,2 +1,13 @@
-reportlab>=4.0
-streamlit>=1.32
+# Pinned exactly rather than floored. A floating range silently pulls in
+# unreviewed releases on every Community Cloud rebuild.
+
+# The markup-escaping fix in generate_report.py depends on how ReportLab's
+# Paragraph parser handles input; all of it was verified against 4.4.9.
+# 5.0.0 exists and is advisory-free, but is a major bump -- upgrade
+# deliberately and re-run the injection checks, don't drift onto it.
+reportlab==4.4.9
+
+# Requires Python >= 3.10, so set that in the Community Cloud advanced
+# settings. Do not lower this pin: 1.32 has known path-traversal and SSRF
+# advisories.
+streamlit==1.59.2
