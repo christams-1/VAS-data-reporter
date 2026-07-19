@@ -1,0 +1,5 @@
+[server]
+# Hourly VAS radar exports are tiny — a full year of hourly rows is well under
+# 1 MB. The 200 MB default is the app's main remaining resource-exhaustion
+# vector, since the uploader is reachable by anyone with the URL.
+maxUploadSize = 10
